@@ -1,6 +1,7 @@
 node_modules/
 dist/
 build/
+!packages/desktop/build/
 out/
 release/
 *.log

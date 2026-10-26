@@ -1,0 +1,29 @@
+# OpenDialer with Docker Compose
+#
+#   docker compose up -d          # build (first time) and start
+#   docker compose logs -f        # see the startup banner / logs
+#   docker compose down           # stop
+#
+# All data (database, recordings, TLS certificate, backups, secret key) lives in ./data.
+# See docs/DEPLOYMENT.md for every setting.
+services:
+  opendialer:
+    build: .
+    image: opendialer:latest
+    container_name: opendialer
+    restart: unless-stopped
+    ports:
+      - "8080:8080"   # http  - admin on this PC / behind a reverse proxy
+      - "8443:8443"   # https - agents on the LAN (self-signed certificate, microphone needs https)
+    volumes:
+      - ./data:/data
+    environment:
+      TZ: "UTC"
+      LOG_LEVEL: "info"
+      TLS: "auto"
+      # Behind a reverse proxy (Caddy/nginx/Cloudflare Tunnel) set your public address here:
+      # PUBLIC_URL: "https://dialer.example.com"
+      # TRUST_PROXY: "true"
+      # Only if the web client is hosted on a different origin:
+      # CORS_ORIGINS: "https://console.example.com"
+      # TOKEN_TTL: "12h"

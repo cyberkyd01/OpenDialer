@@ -1,0 +1,55 @@
+# OpenDialer server - systemd unit
+#
+# Install (see docs/DEPLOYMENT.md for the full walkthrough):
+#   sudo useradd --system --home /opt/opendialer --shell /usr/sbin/nologin opendialer
+#   sudo git clone https://github.com/cyberkyd01/OpenDialer /opt/opendialer
+#   cd /opt/opendialer && sudo npm ci && sudo npm run build
+#   sudo mkdir -p /var/lib/opendialer && sudo chown -R opendialer:opendialer /var/lib/opendialer
+#   sudo cp scripts/linux/opendialer.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now opendialer
+#   journalctl -u opendialer -f        # logs + startup banner
+#
+# Adjust WorkingDirectory / ExecStart if you installed elsewhere or node is not /usr/bin/node
+# (check with: command -v node). Put overrides in /etc/opendialer.env (KEY=value lines) or use
+# `sudo systemctl edit opendialer`.
+
+[Unit]
+Description=OpenDialer call-center server
+Documentation=https://github.com/cyberkyd01/OpenDialer
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=opendialer
+Group=opendialer
+WorkingDirectory=/opt/opendialer
+Environment=NODE_ENV=production
+Environment=DATA_DIR=/var/lib/opendialer
+Environment=PORT=8080
+Environment=HTTPS_PORT=8443
+Environment=TLS=auto
+Environment=LOG_LEVEL=info
+EnvironmentFile=-/etc/opendialer.env
+ExecStart=/usr/bin/node packages/server/dist/index.js
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=15
+KillSignal=SIGTERM
+
+# Hardening (the server only needs to write to its data directory)
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/opendialer
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+# Uncomment to bind ports below 1024 (e.g. PORT=80 / HTTPS_PORT=443) without root:
+# AmbientCapabilities=CAP_NET_BIND_SERVICE
+
+[Install]
+WantedBy=multi-user.target

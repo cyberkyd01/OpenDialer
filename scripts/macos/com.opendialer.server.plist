@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  OpenDialer server - macOS launchd job
+
+  Starts the OpenDialer server at login (LaunchAgent) or at boot (LaunchDaemon) and restarts it
+  if it exits. Edit the paths marked CHANGE below first:
+    - /usr/local/bin/node     -> output of `command -v node` (Apple Silicon Homebrew: /opt/homebrew/bin/node)
+    - /Users/you/OpenDialer   -> the folder you cloned and built (`npm ci && npm run build`)
+
+  Per-user (starts when you log in):
+    cp scripts/macos/com.opendialer.server.plist ~/Library/LaunchAgents/
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.opendialer.server.plist
+    launchctl kickstart -k gui/$(id -u)/com.opendialer.server     # (re)start now
+    launchctl bootout gui/$(id -u)/com.opendialer.server          # stop + unload
+
+  System-wide (starts at boot, no login needed): copy to /Library/LaunchDaemons/ (owner root:wheel,
+  mode 644), add a UserName key, and use `sudo launchctl bootstrap system /Library/LaunchDaemons/...`.
+
+  Logs: /Users/you/OpenDialer/packages/server/data/logs/server.log (the folder must exist: mkdir -p packages/server/data/logs)
+  The data directory is the same one `npm start` uses (packages/server/data).
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.opendialer.server</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/node</string>                         <!-- CHANGE -->
+    <string>packages/server/dist/index.js</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/you/OpenDialer</string>                         <!-- CHANGE -->
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>NODE_ENV</key>
+    <string>production</string>
+    <key>DATA_DIR</key>
+    <string>/Users/you/OpenDialer/packages/server/data</string>                  <!-- CHANGE -->
+    <key>PORT</key>
+    <string>8080</string>
+    <key>HTTPS_PORT</key>
+    <string>8443</string>
+    <key>TLS</key>
+    <string>auto</string>
+    <key>LOG_LEVEL</key>
+    <string>info</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+
+  <key>StandardOutPath</key>
+  <string>/Users/you/OpenDialer/packages/server/data/logs/server.log</string>    <!-- CHANGE -->
+  <key>StandardErrorPath</key>
+  <string>/Users/you/OpenDialer/packages/server/data/logs/server.log</string>    <!-- CHANGE -->
+</dict>
+</plist>

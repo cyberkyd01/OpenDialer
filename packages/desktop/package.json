@@ -2,7 +2,70 @@
   "name": "@opendialer/desktop",
   "version": "1.0.0",
   "private": true,
+  "description": "OpenDialer desktop app for agents and supervisors (Electron shell around the OpenDialer web console).",
+  "author": "OpenDialer contributors",
+  "license": "MIT",
+  "homepage": "https://github.com/cyberkyd01/OpenDialer",
+  "main": "src/main.cjs",
   "scripts": {
-    "start": "echo \"desktop placeholder\""
+    "start": "electron .",
+    "smoke": "electron . --smoke",
+    "gen-icon": "node ../../scripts/gen-icon.mjs",
+    "dist": "electron-builder",
+    "dist:win": "electron-builder --win",
+    "dist:mac": "electron-builder --mac",
+    "dist:linux": "electron-builder --linux"
+  },
+  "devDependencies": {
+    "electron": "45.0.0",
+    "electron-builder": "^26.18.0"
+  },
+  "build": {
+    "appId": "com.opendialer.desktop",
+    "productName": "OpenDialer",
+    "copyright": "Copyright (c) OpenDialer contributors",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "src/**/*",
+      "build/icon.*"
+    ],
+    "icon": "build/icon.png",
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        },
+        {
+          "target": "portable",
+          "arch": ["x64"]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false
+    },
+    "mac": {
+      "category": "public.app-category.business",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": ["x64", "arm64"]
+        }
+      ],
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "OpenDialer uses the microphone for calls placed from the built-in softphone."
+      }
+    },
+    "linux": {
+      "category": "Office",
+      "maintainer": "OpenDialer contributors <opendialer@users.noreply.github.com>",
+      "target": ["AppImage", "deb"]
+    }
   }
 }
