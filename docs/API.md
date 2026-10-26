@@ -131,4 +131,6 @@ Agent lifecycle:
 
 Server→client: `agent:state`, `lead:assigned`, `lead:released`, `call:started`, `call:ended`, `callback:due`, `notice`, `session:replaced`, `campaign:changed`, and for supervisors who sent `wallboard:subscribe`: `wallboard:update` (≤1/s).
 
-A socket that drops while the agent is busy keeps its session for 60 s; reconnecting with the same user resumes it (the lead and call are re-sent).
+A socket that drops keeps the agent session for 60 s; reconnecting and sending `agent:join` again resumes it (the lead and call are re-sent, with `autoDial` forced to false when a call is already up).
+
+A user may hold several sockets at once (for example a supervisor's wallboard tab next to their agent console). Only the socket that last sent `agent:join` is the **agent console**: it receives agent events and may send them; the previous console socket gets `session:replaced` and its agent events are refused with "no longer the active agent console". Wallboard-only sockets never replace the console.

@@ -4,6 +4,21 @@
  */
 import { z } from 'zod';
 
+type StripDefaults<T extends z.ZodRawShape> = { [K in keyof T]: T[K] extends z.ZodDefault<infer U> ? U : T[K] };
+
+/**
+ * Build an update (PATCH) schema from a create schema. In zod 4, `.partial()` keeps
+ * `.default()` values, so a bare `create.partial()` would silently reset every field
+ * the client did not send. This strips the defaults first: omitted = unchanged.
+ */
+export function partialUpdate<T extends z.ZodRawShape>(schema: z.ZodObject<T>) {
+  const shape: Record<string, z.ZodTypeAny> = {};
+  for (const [key, field] of Object.entries(schema.shape)) {
+    shape[key] = field instanceof z.ZodDefault ? (field.def.innerType as z.ZodTypeAny) : (field as z.ZodTypeAny);
+  }
+  return z.object(shape as unknown as StripDefaults<T>).partial();
+}
+
 export const roleSchema = z.enum(['admin', 'supervisor', 'agent']);
 export const dialModeSchema = z.enum(['manual', 'preview', 'progressive']);
 export const campaignStatusSchema = z.enum(['draft', 'active', 'paused', 'completed']);
@@ -44,9 +59,7 @@ export const userCreateSchema = z.object({
   sipPassword: z.string().max(200).nullable().optional(),
 });
 
-export const userUpdateSchema = userCreateSchema.partial().extend({
-  password: z.string().min(8).max(200).optional(),
-});
+export const userUpdateSchema = partialUpdate(userCreateSchema);
 
 export const iceServerSchema = z.object({
   urls: z.string().min(1),
@@ -73,9 +86,9 @@ export const settingsSchema = z.object({
   maxAttemptsPerDay: z.number().int().min(0).max(100),
   requireConsentFlag: z.boolean(),
 });
-export const settingsUpdateSchema = settingsSchema
-  .partial()
-  .extend({ telephony: telephonySettingsSchema.partial().optional() });
+export const settingsUpdateSchema = partialUpdate(settingsSchema).extend({
+  telephony: partialUpdate(telephonySettingsSchema).optional(),
+});
 
 export const campaignCreateSchema = z.object({
   name: z.string().min(1).max(120),
@@ -95,7 +108,7 @@ export const campaignCreateSchema = z.object({
   recording: recordingPolicySchema.default('agent'),
   dialPrefix: z.string().max(10).default(''),
 });
-export const campaignUpdateSchema = campaignCreateSchema.partial();
+export const campaignUpdateSchema = partialUpdate(campaignCreateSchema);
 export const campaignStatusUpdateSchema = z.object({ status: campaignStatusSchema });
 export const campaignAgentsSchema = z.object({ userIds: z.array(z.number().int()) });
 
@@ -103,7 +116,7 @@ export const listCreateSchema = z.object({
   name: z.string().min(1).max(120),
   active: z.boolean().default(true),
 });
-export const listUpdateSchema = listCreateSchema.partial();
+export const listUpdateSchema = partialUpdate(listCreateSchema);
 
 export const leadCreateSchema = z.object({
   listId: z.number().int(),
@@ -159,7 +172,7 @@ export const dispositionCreateSchema = z.object({
   color: z.string().regex(/^#[0-9a-fA-F]{6}$/).default('#64748b'),
   sortOrder: z.number().int().default(100),
 });
-export const dispositionUpdateSchema = dispositionCreateSchema.partial();
+export const dispositionUpdateSchema = partialUpdate(dispositionCreateSchema);
 
 export const dncCreateSchema = z.object({
   phone: z.string().min(3).max(40),
@@ -170,7 +183,7 @@ export const scriptCreateSchema = z.object({
   name: z.string().min(1).max(120),
   body: z.string().max(50000).default(''),
 });
-export const scriptUpdateSchema = scriptCreateSchema.partial();
+export const scriptUpdateSchema = partialUpdate(scriptCreateSchema);
 
 export const callbackUpdateSchema = z.object({
   scheduledAt: z.string().optional(),
@@ -185,7 +198,7 @@ export const webhookCreateSchema = z.object({
   secret: z.string().max(200).default(''),
   active: z.boolean().default(true),
 });
-export const webhookUpdateSchema = webhookCreateSchema.partial();
+export const webhookUpdateSchema = partialUpdate(webhookCreateSchema);
 
 export const apiKeyCreateSchema = z.object({ name: z.string().min(1).max(80) });
 

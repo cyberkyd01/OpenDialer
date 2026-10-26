@@ -3,7 +3,8 @@ import { normalizePhone, formatPhone, phoneDigits } from './phone.js';
 import { timezoneForPhone } from './areacodes.js';
 import { isWithinCallingHours, localTimeIn, resolveLeadTimezone, isValidTimezone } from './hours.js';
 import { renderScript } from './script.js';
-import { campaignCreateSchema, importMappingSchema, setupSchema } from './schemas.js';
+import { campaignCreateSchema, campaignUpdateSchema, importMappingSchema, partialUpdate, settingsUpdateSchema, setupSchema, userUpdateSchema } from './schemas.js';
+import { z } from 'zod';
 
 describe('normalizePhone', () => {
   it('parses US national numbers with default country', () => {
@@ -114,6 +115,17 @@ describe('schemas', () => {
   it('validates setup', () => {
     expect(() => setupSchema.parse({ username: 'ad min', password: 'password123', displayName: 'A' })).toThrow();
     expect(setupSchema.parse({ username: 'admin', password: 'password123', displayName: 'A' }).companyName).toBe('OpenDialer');
+  });
+  it('update schemas never re-apply create defaults (omitted = unchanged)', () => {
+    expect(campaignUpdateSchema.parse({ scriptId: 3 })).toEqual({ scriptId: 3 });
+    expect(userUpdateSchema.parse({ sipUsername: '1001' })).toEqual({ sipUsername: '1001' });
+    expect(settingsUpdateSchema.parse({ telephony: { wssUrl: 'wss://x' } })).toEqual({ telephony: { wssUrl: 'wss://x' } });
+    // validation still applies to the fields that are sent
+    expect(() => campaignUpdateSchema.parse({ callingHoursStart: '99:00' })).toThrow();
+    expect(() => userUpdateSchema.parse({ password: 'short' })).toThrow();
+    const s = partialUpdate(z.object({ a: z.string().default('x'), b: z.number().nullable().default(null), c: z.string() }));
+    expect(s.parse({})).toEqual({});
+    expect(s.parse({ b: null, c: 'y' })).toEqual({ b: null, c: 'y' });
   });
   it('import mapping requires phone', () => {
     expect(() => importMappingSchema.parse({})).toThrow();

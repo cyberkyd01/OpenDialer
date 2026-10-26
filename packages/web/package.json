@@ -3,11 +3,37 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
+  "description": "OpenDialer web client: agent console, admin and supervisor UI (installable PWA).",
   "scripts": {
-    "build": "echo \"web build placeholder\"",
-    "test": "echo \"no web tests yet\""
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "e2e": "npm run build && playwright test",
+    "icons": "node scripts/gen-icons.mjs"
   },
   "dependencies": {
-    "@opendialer/shared": "1.0.0"
+    "@opendialer/shared": "1.0.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^7.18.4",
+    "sip.js": "^0.21.2",
+    "socket.io-client": "^4.8.4",
+    "zod": "^4.6.7",
+    "zustand": "^5.0.16"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.64.1",
+    "@testing-library/react": "^16.3.3",
+    "@types/node": "^22.10.2",
+    "@types/react": "^18.3.31",
+    "@types/react-dom": "^18.3.7",
+    "@vitejs/plugin-react": "^6.1.2",
+    "jsdom": "^27.4.0",
+    "typescript": "^5.6.3",
+    "vite": "^8.3.5",
+    "vite-plugin-pwa": "^2.0.0",
+    "vitest": "^5.0.5"
   }
 }

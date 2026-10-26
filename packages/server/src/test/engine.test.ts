@@ -315,17 +315,45 @@ describe('callbacks', () => {
 describe('sessions & resilience', () => {
   it('a second login replaces the first socket and keeps the lead', async () => {
     const { campaignId } = await createCampaignWithLeads(t, admin, { phones: ['+14155550221'] });
-    const { token, client } = await agentOn(campaignId, 'rs1');
+    const { user, token, client } = await agentOn(campaignId, 'rs1');
     await client.call('agent:ready');
     const a = await client.next('lead:assigned');
     const second = await connectAgent(t, token);
     clients.push(second);
-    await client.next('session:replaced');
     const join = await second.call('agent:join', { campaignId });
     expect(join.data.state).toBe('assigned');
     expect(join.data.leadId).toBe(a.lead.id);
+    await client.next('session:replaced');
     const re = await second.next('lead:assigned');
     expect(re.lead.id).toBe(a.lead.id);
+    // the old tab can no longer drive the session
+    const stale = await client.call('lead:skip', { leadId: a.lead.id, requeue: true });
+    expect(stale.ok).toBe(false);
+    expect(stale.error).toMatch(/no longer the active/);
+    expect(t.app.engine.getSession(user.id)?.leadId).toBe(a.lead.id);
+  });
+
+  it('a wallboard socket of the same user does not replace their agent console', async () => {
+    const { campaignId } = await createCampaignWithLeads(t, admin, { phones: ['+14155550222'] });
+    const sup = await createAgent(t, admin, 'rs1b', 'supervisor');
+    await t.api('PUT', `/api/campaigns/${campaignId}/agents`, { userIds: [sup.user.id] }, admin);
+    const consoleSock = await connectAgent(t, sup.token);
+    clients.push(consoleSock);
+    expect((await consoleSock.call('agent:join', { campaignId })).ok).toBe(true);
+    await consoleSock.call('agent:ready');
+    const a = await consoleSock.next('lead:assigned');
+    const dash = await connectAgent(t, sup.token);
+    clients.push(dash);
+    const sub = await dash.call('wallboard:subscribe');
+    expect(sub.ok).toBe(true);
+    expect(sub.data.agents.find((x: any) => x.userId === sup.user.id).state).toBe('assigned');
+    // dashboard closing must not touch the console session
+    dash.close();
+    await sleep(150);
+    expect(t.app.engine.getSession(sup.user.id)?.disconnectedAt).toBeNull();
+    expect(consoleSock.received('session:replaced')).toHaveLength(0);
+    const d = await consoleSock.call('lead:dial', { leadId: a.lead.id });
+    expect(d.ok, d.error).toBe(true);
   });
 
   it('disconnect during a call keeps the session for the grace period, then releases everything', async () => {

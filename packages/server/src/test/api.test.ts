@@ -93,6 +93,21 @@ describe('campaigns, lists, leads', () => {
     expect(l.status).toBe(201);
     listId = l.body.id;
   });
+  it('PATCH only changes the fields that were sent', async () => {
+    await t.api('PATCH', `/api/campaigns/${campaignId}`, { callingHoursStart: '10:30', callingDays: [1, 3], maxAttempts: 7, dialMode: 'progressive' }, admin);
+    const after = await t.api('PATCH', `/api/campaigns/${campaignId}`, { description: 'only this' }, admin);
+    expect(after.status).toBe(200);
+    expect(after.body).toMatchObject({ description: 'only this', callingHoursStart: '10:30', callingDays: [1, 3], maxAttempts: 7, dialMode: 'progressive' });
+    await t.api('PATCH', `/api/campaigns/${campaignId}`, { dialMode: 'preview' }, admin);
+
+    const { user } = await createAgent(t, admin, 'patchme', 'supervisor');
+    const u = await t.api('PATCH', `/api/users/${user.id}`, { sipUsername: '2001' }, admin);
+    expect(u.body).toMatchObject({ role: 'supervisor', active: true, sipUsername: '2001' });
+    const l = await t.api('PATCH', `/api/lists/${listId}`, { active: false }, admin);
+    expect(l.body.active).toBe(false);
+    expect((await t.api('PATCH', `/api/lists/${listId}`, { name: 'Main renamed' }, admin)).body.active).toBe(false);
+    await t.api('PATCH', `/api/lists/${listId}`, { active: true }, admin);
+  });
   it('agents only see campaigns they are assigned to', async () => {
     const { user, token } = await createAgent(t, admin, 'carol');
     expect((await t.api('GET', '/api/campaigns', undefined, token)).body).toHaveLength(0);

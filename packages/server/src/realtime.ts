@@ -8,7 +8,7 @@ import type { Ctx } from './context.js';
 import type { Engine } from './engine.js';
 import { HttpError } from './errors.js';
 
-type RtSocket = Socket<ClientToServerEvents, ServerToClientEvents, Record<string, never>, { user: AuthUser }>;
+type RtSocket = Socket<ClientToServerEvents, ServerToClientEvents, Record<string, never>, { user: AuthUser; replaced?: boolean }>;
 
 export function createRealtime(ctx: Ctx, engine: Engine, servers: (HttpServer | HttpsServer)[]) {
   const io = new Server<ClientToServerEvents, ServerToClientEvents>({
@@ -19,6 +19,11 @@ export function createRealtime(ctx: Ctx, engine: Engine, servers: (HttpServer | 
   });
   for (const s of servers) io.attach(s);
   const nsp = io.of(RT_NAMESPACE);
+  /**
+   * The one socket per user that acts as the agent console (set on agent:join).
+   * A user may hold other sockets at the same time (e.g. a supervisor's wallboard tab);
+   * those never receive agent events and never replace the console.
+   */
   const sockets = new Map<number, RtSocket>();
 
   nsp.use((socket, next) => {
@@ -56,30 +61,48 @@ export function createRealtime(ctx: Ctx, engine: Engine, servers: (HttpServer | 
   nsp.on('connection', (raw) => {
     const socket = raw as RtSocket;
     const user = socket.data.user;
-    const previous = sockets.get(user.id);
-    if (previous && previous.id !== socket.id) {
-      previous.emit('session:replaced');
-      previous.data.user = { ...previous.data.user, id: -1 }; // mark so its disconnect handler is a no-op
-      previous.disconnect(true);
-    }
-    sockets.set(user.id, socket);
-    ctx.log.info({ user: user.username, socket: socket.id }, 'agent connected');
-    engine.reconnected(user.id);
+    ctx.log.info({ user: user.username, socket: socket.id }, 'socket connected');
 
-    socket.on('agent:join', handle(socket, (p: { campaignId: number | null }) => engine.join(user, p.campaignId ?? null)));
-    socket.on('agent:ready', handle(socket, () => engine.ready(user.id)));
-    socket.on('agent:pause', handle(socket, (p: { code: string }) => engine.pause(user.id, String(p.code ?? 'Pause').slice(0, 40))));
-    socket.on('agent:leave', handle(socket, () => engine.leave(user.id)));
-    socket.on('lead:skip', handle(socket, (p: { leadId: number; requeue: boolean }) => engine.skip(user.id, Number(p.leadId), p.requeue !== false)));
-    socket.on('lead:dial', handle(socket, (p: { leadId: number }) => engine.dial(user.id, Number(p.leadId))));
+    /** Only the current console socket may drive the agent session. */
+    const console_ = <P, R>(fn: (p: P) => R) =>
+      handle(socket, (p: P) => {
+        if (sockets.get(user.id) !== socket) throw new HttpError(409, 'This tab is no longer the active agent console – join again');
+        return fn(p);
+      });
+
+    socket.on(
+      'agent:join',
+      handle(socket, (p: { campaignId: number | null }) => {
+        const previous = sockets.get(user.id);
+        if (previous && previous.id !== socket.id) {
+          previous.emit('session:replaced');
+          previous.data.replaced = true;
+          sockets.delete(user.id);
+        }
+        sockets.set(user.id, socket);
+        engine.reconnected(user.id);
+        return engine.join(user, p.campaignId ?? null);
+      }),
+    );
+    socket.on('agent:ready', console_(() => engine.ready(user.id)));
+    socket.on('agent:pause', console_((p: { code: string }) => engine.pause(user.id, String(p.code ?? 'Pause').slice(0, 40))));
+    socket.on(
+      'agent:leave',
+      console_(() => {
+        engine.leave(user.id);
+        sockets.delete(user.id);
+      }),
+    );
+    socket.on('lead:skip', console_((p: { leadId: number; requeue: boolean }) => engine.skip(user.id, Number(p.leadId), p.requeue !== false)));
+    socket.on('lead:dial', console_((p: { leadId: number }) => engine.dial(user.id, Number(p.leadId))));
     socket.on(
       'manual:dial',
-      handle(socket, (p: { phone: string; campaignId?: number | null; leadId?: number | null }) =>
+      console_((p: { phone: string; campaignId?: number | null; leadId?: number | null }) =>
         engine.manualDial(user.id, String(p.phone ?? ''), p.campaignId ?? null, p.leadId ?? null),
       ),
     );
-    socket.on('call:update', handle(socket, (p: Parameters<ClientToServerEvents['call:update']>[0]) => engine.callUpdate(user.id, p)));
-    socket.on('call:dispose', handle(socket, (p: Parameters<ClientToServerEvents['call:dispose']>[0]) => engine.dispose(user.id, p)));
+    socket.on('call:update', console_((p: Parameters<ClientToServerEvents['call:update']>[0]) => engine.callUpdate(user.id, p)));
+    socket.on('call:dispose', console_((p: Parameters<ClientToServerEvents['call:dispose']>[0]) => engine.dispose(user.id, p)));
     socket.on(
       'wallboard:subscribe',
       handle(socket, () => {
@@ -97,9 +120,10 @@ export function createRealtime(ctx: Ctx, engine: Engine, servers: (HttpServer | 
     );
 
     socket.on('disconnect', (reason) => {
-      if (socket.data.user.id === -1) return; // replaced by a newer connection
-      if (sockets.get(user.id)?.id === socket.id) sockets.delete(user.id);
-      ctx.log.info({ user: user.username, reason }, 'agent disconnected');
+      // only the active console socket owns the agent session; dashboards and replaced tabs just go away
+      if (socket.data.replaced || sockets.get(user.id) !== socket) return;
+      sockets.delete(user.id);
+      ctx.log.info({ user: user.username, reason }, 'agent console disconnected');
       engine.disconnected(user.id);
     });
   });
