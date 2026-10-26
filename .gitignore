@@ -1,0 +1,19 @@
+node_modules/
+dist/
+build/
+out/
+release/
+*.log
+.DS_Store
+Thumbs.db
+.env
+.env.*
+!.env.example
+# runtime data (database, recordings, TLS certs, secrets)
+data/
+packages/server/data/
+coverage/
+.vite/
+*.tsbuildinfo
+playwright-report/
+test-results/

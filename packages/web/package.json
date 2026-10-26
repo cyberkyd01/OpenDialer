@@ -1,0 +1,13 @@
+{
+  "name": "@opendialer/web",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "echo \"web build placeholder\"",
+    "test": "echo \"no web tests yet\""
+  },
+  "dependencies": {
+    "@opendialer/shared": "1.0.0"
+  }
+}
