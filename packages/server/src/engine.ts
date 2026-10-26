@@ -33,6 +33,8 @@ import { getSettings } from './services/settings.js';
 export interface Transport {
   toUser<K extends keyof ServerToClientEvents>(userId: number, event: K, ...args: Parameters<ServerToClientEvents[K]>): void;
   toSupervisors<K extends keyof ServerToClientEvents>(event: K, ...args: Parameters<ServerToClientEvents[K]>): void;
+  /** number of clients subscribed to the wallboard (snapshot is skipped when 0) */
+  supervisorCount?: () => number;
 }
 
 export interface AgentSession {
@@ -120,11 +122,12 @@ export class Engine {
     const existing = this.sessions.get(user.id);
     if (existing) {
       existing.disconnectedAt = null;
-      if (existing.campaignId === campaignId || IN_CALL.includes(existing.state)) {
-        // reconnect: resend the lead if the agent still holds one
+      if (existing.campaignId === campaignId) {
+        // reconnect / re-join: resend the lead and call if the agent still holds one
         if (existing.leadId && existing.campaignId != null) this.resendAssignment(existing);
         return this.payload(existing);
       }
+      if (BUSY.includes(existing.state)) throw conflict('Finish the current call and wrap-up before switching campaign');
       // switching campaign while idle
       this.releaseCurrentLead(existing, 'campaign switch');
       existing.campaignId = campaignId;
@@ -167,22 +170,23 @@ export class Engine {
     this.scheduleWallboard();
   }
 
-  /** Socket dropped. Keep the session for a grace period so a flaky network does not lose a call. */
+  /**
+   * Socket dropped. The session (state, lead, call) survives for DISCONNECT_GRACE_MS so a
+   * flaky network does not lose a call or force the agent to re-join; no new leads are
+   * handed out until the client is back. tick() expires it afterwards.
+   */
   disconnected(userId: number) {
     const s = this.sessions.get(userId);
     if (!s) return;
     s.disconnectedAt = Date.now();
-    if (!BUSY.includes(s.state)) {
-      // idle agents are simply logged out
-      this.leave(userId);
-    }
+    this.scheduleWallboard();
   }
 
+  /** Socket is back. The client re-sends agent:join, which resends the lead/call – only the state goes out here. */
   reconnected(userId: number) {
     const s = this.sessions.get(userId);
     if (!s) return;
     s.disconnectedAt = null;
-    if (s.leadId) this.resendAssignment(s);
     this.transport.toUser(userId, 'agent:state', this.payload(s));
   }
 
@@ -218,8 +222,20 @@ export class Engine {
     const s = this.requireSession(userId);
     if (s.state !== 'assigned' || s.leadId !== leadId) throw conflict('No such lead assigned');
     const campaign = s.campaignId ? findCampaign(this.ctx.db, s.campaignId) : null;
-    if (requeue) {
-      releaseLead(this.ctx.db, leadId, { delayMinutes: campaign?.retryMinutes ?? 240 });
+    const delay = campaign?.retryMinutes ?? 240;
+    if (s.callbackId) {
+      // lead came from a scheduled callback: push the callback out (or drop it) so it is not re-offered at once
+      if (requeue) {
+        this.ctx.db
+          .prepare(`UPDATE callbacks SET scheduled_at = ? WHERE id = ? AND status = 'pending'`)
+          .run(new Date(Date.now() + delay * 60 * 1000).toISOString(), s.callbackId);
+        releaseLead(this.ctx.db, leadId);
+      } else {
+        this.ctx.db.prepare(`UPDATE callbacks SET status = 'cancelled' WHERE id = ?`).run(s.callbackId);
+        this.ctx.db.prepare(`UPDATE leads SET status = 'done', locked_by = NULL, locked_at = NULL WHERE id = ?`).run(leadId);
+      }
+    } else if (requeue) {
+      releaseLead(this.ctx.db, leadId, { delayMinutes: delay });
     } else {
       // "skip for good": mark done without a call
       this.ctx.db.prepare(`UPDATE leads SET status = 'done', locked_by = NULL, locked_at = NULL WHERE id = ?`).run(leadId);
@@ -277,6 +293,8 @@ export class Engine {
       s.leadId = null;
     }
     s.callbackId = null;
+    // a paused agent stays paused after a manual call instead of dropping into auto-dialing
+    if (s.state === 'paused') s.pendingPause = s.pauseCode ?? 'Pause';
     const call = startCall(this.ctx.db, { leadId: lead?.id ?? null, campaignId: campaign?.id ?? null, userId, phone: n.e164 });
     s.callId = call.id;
     s.disposedDuringCall = false;
@@ -301,6 +319,7 @@ export class Engine {
       return this.payload(s);
     }
     // ended
+    if (s.state === 'wrapup') return this.payload(s); // duplicate hangup report – idempotent
     if (!IN_CALL.includes(s.state)) throw conflict(`Unexpected hangup in state ${s.state}`);
     const call = endCall(this.ctx.db, p.callId, p.cause, p.providerCallId);
     this.transport.toUser(userId, 'call:ended', { call });
@@ -452,7 +471,10 @@ export class Engine {
     const lead = findLead(this.ctx.db, s.leadId);
     const campaign = findCampaign(this.ctx.db, s.campaignId);
     if (!lead || !campaign) return;
-    this.transport.toUser(s.userId, 'lead:assigned', this.assignmentPayload(lead, campaign, s.callbackId));
+    const payload = this.assignmentPayload(lead, campaign, s.callbackId);
+    // a call is already in progress – the softphone must not dial again
+    if (s.callId) payload.autoDial = false;
+    this.transport.toUser(s.userId, 'lead:assigned', payload);
     if (s.callId) {
       const call = findCall(this.ctx.db, s.callId);
       if (call) this.transport.toUser(s.userId, 'call:started', { call });
@@ -640,9 +662,10 @@ export class Engine {
     return { at: new Date().toISOString(), agents, campaigns, today: todaySummary(this.ctx.db) };
   }
 
-  /** Push a wallboard update to supervisors, at most once per second. */
+  /** Push a wallboard update to supervisors, at most once per second (skipped when nobody is watching). */
   private scheduleWallboard() {
     if (this.wallboardTimer) return;
+    if (this.transport.supervisorCount && this.transport.supervisorCount() === 0) return;
     const wait = Math.max(0, 1000 - (Date.now() - this.lastWallboard));
     this.wallboardTimer = setTimeout(() => {
       this.wallboardTimer = null;

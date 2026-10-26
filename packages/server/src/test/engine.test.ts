@@ -347,18 +347,46 @@ describe('sessions & resilience', () => {
     expect(call.result).toBe('answered');
   });
 
-  it('idle disconnect logs the agent out immediately and releases a preview lead', async () => {
-    const { campaignId, leads } = await createCampaignWithLeads(t, admin, { phones: ['+14155550241'] });
-    const { user, client } = await agentOn(campaignId, 'rs3');
+  it('a disconnected agent gets no new leads, resumes on re-join, and expires after the grace period', async () => {
+    const { campaignId, leads } = await createCampaignWithLeads(t, admin, { phones: ['+14155550241', '+14155550242'] });
+    const { user, token, client } = await agentOn(campaignId, 'rs3');
     await client.call('agent:ready');
-    await client.next('lead:assigned');
+    const a = await client.next('lead:assigned');
     client.close();
     await sleep(150);
-    // assigned (preview, no call) counts as busy -> grace period applies
     expect(t.app.engine.getSession(user.id)?.disconnectedAt).toBeTruthy();
+    t.app.engine.tick(); // within grace: nothing changes
+    expect(t.app.engine.getSession(user.id)?.leadId).toBe(a.lead.id);
+
+    // reconnect: exactly one lead:assigned (from agent:join), same lead, no auto-dial duplication
+    const again = await connectAgent(t, token);
+    clients.push(again);
+    const join = await again.call('agent:join', { campaignId });
+    expect(join.data.state).toBe('assigned');
+    const re = await again.next('lead:assigned');
+    expect(re.lead.id).toBe(a.lead.id);
+    await sleep(100);
+    expect(again.received('lead:assigned')).toHaveLength(0);
+
+    again.close();
+    await sleep(150);
     t.app.engine.tick(Date.now() + DISCONNECT_GRACE_MS + 1000);
     expect(t.app.engine.getSession(user.id)).toBeUndefined();
     expect((await t.api('GET', `/api/leads/${leads[0].id}`, undefined, admin)).body.lockedBy).toBeNull();
+  });
+
+  it('idle agents also survive a short disconnect', async () => {
+    const { campaignId } = await createCampaignWithLeads(t, admin, { dialMode: 'manual', phones: ['+14155550243'] });
+    const { user, token, client } = await agentOn(campaignId, 'rs3b');
+    await client.call('agent:ready');
+    client.close();
+    await sleep(150);
+    expect(t.app.engine.getSession(user.id)?.state).toBe('ready');
+    const again = await connectAgent(t, token);
+    clients.push(again);
+    const join = await again.call('agent:join', { campaignId });
+    expect(join.data.state).toBe('ready');
+    expect(t.app.engine.getSession(user.id)?.disconnectedAt).toBeNull();
   });
 
   it('wrap-up timeout auto-dispositions unanswered calls only', async () => {
@@ -414,6 +442,75 @@ describe('sessions & resilience', () => {
     const kick = await t.api('POST', `/api/agents/${user.id}/logout`, undefined, sup.token);
     expect(kick.status).toBe(200);
     expect(t.app.engine.getSession(user.id)).toBeUndefined();
+  });
+
+  it('a paused agent stays paused after a manual call (no surprise auto-dialing)', async () => {
+    const { campaignId } = await createCampaignWithLeads(t, admin, { dialMode: 'progressive', phones: ['+14155550291'] });
+    const { client } = await agentOn(campaignId, 'rs8');
+    await client.call('agent:pause', { code: 'Admin work' });
+    const m = await client.call('manual:dial', { phone: '+14155550292' });
+    expect(m.ok, m.error).toBe(true);
+    await runCall(client, m.data.callId);
+    const r = await client.call('call:dispose', { callId: m.data.callId, dispositionId: dispositions.NOT_INTERESTED });
+    expect(r.data.state).toBe('paused');
+    expect(r.data.pauseCode).toBe('Admin work');
+    await sleep(100);
+    expect(client.received('lead:assigned')).toHaveLength(0);
+  });
+
+  it('duplicate hangup reports are idempotent and switching campaign while busy is refused', async () => {
+    const { campaignId } = await createCampaignWithLeads(t, admin, { phones: ['+14155550301'] });
+    const other = await createCampaignWithLeads(t, admin, { name: 'Other', phones: ['+14155550302'] });
+    const { user, client } = await agentOn(campaignId, 'rs9');
+    await t.api('PUT', `/api/campaigns/${other.campaignId}/agents`, { userIds: [user.id] }, admin);
+    await client.call('agent:ready');
+    const a = await client.next('lead:assigned');
+    const d = await client.call('lead:dial', { leadId: a.lead.id });
+    await runCall(client, d.data.callId);
+    const dup = await client.call('call:update', { callId: d.data.callId, state: 'ended', cause: 'normal' });
+    expect(dup.ok).toBe(true);
+    expect(dup.data.state).toBe('wrapup');
+    const sw = await client.call('agent:join', { campaignId: other.campaignId });
+    expect(sw.ok).toBe(false);
+    expect(sw.error).toMatch(/Finish the current call/);
+    await client.call('call:dispose', { callId: d.data.callId, dispositionId: dispositions.SALE });
+    const sw2 = await client.call('agent:join', { campaignId: other.campaignId });
+    expect(sw2.ok).toBe(true);
+    expect(sw2.data.campaignId).toBe(other.campaignId);
+  });
+
+  it('skipping a callback lead postpones the callback instead of re-offering it at once', async () => {
+    const { campaignId, leads } = await createCampaignWithLeads(t, admin, { phones: ['+14155550311'], extra: { retryMinutes: 30 } });
+    const { user, client } = await agentOn(campaignId, 'rs10');
+    const ins = t.app.ctx.db
+      .prepare(`INSERT INTO callbacks (lead_id, campaign_id, user_id, scheduled_at, note, created_by) VALUES (?, ?, ?, ?, 'x', ?)`)
+      .run(leads[0].id, campaignId, user.id, new Date(Date.now() - 1000).toISOString(), user.id);
+    t.app.ctx.db.prepare(`UPDATE leads SET status = 'callback' WHERE id = ?`).run(leads[0].id);
+    await client.call('agent:ready');
+    const a = await client.next('lead:assigned');
+    expect(a.callback.id).toBe(Number(ins.lastInsertRowid));
+    const skip = await client.call('lead:skip', { leadId: a.lead.id, requeue: true });
+    expect(skip.data.state).toBe('ready');
+    t.app.engine.tick();
+    await sleep(100);
+    expect(client.received('lead:assigned')).toHaveLength(0);
+    const cb = (await t.api('GET', `/api/callbacks/${ins.lastInsertRowid}`, undefined, admin)).body;
+    expect(cb.status).toBe('pending');
+    expect(new Date(cb.scheduledAt).getTime()).toBeGreaterThan(Date.now() + 25 * 60_000);
+  });
+
+  it('a CALLBACK disposition without a scheduled time becomes a normal retry', async () => {
+    const { campaignId, leads } = await createCampaignWithLeads(t, admin, { phones: ['+14155550321'], extra: { retryMinutes: 60 } });
+    const { client } = await agentOn(campaignId, 'rs11');
+    await client.call('agent:ready');
+    const a = await client.next('lead:assigned');
+    const d = await client.call('lead:dial', { leadId: a.lead.id });
+    await runCall(client, d.data.callId);
+    const r = await client.call('call:dispose', { callId: d.data.callId, dispositionId: dispositions.CALLBACK });
+    expect(r.data.state).toBe('ready');
+    const lead = (await t.api('GET', `/api/leads/${leads[0].id}`, undefined, admin)).body;
+    expect(lead.status).toBe('in_progress');
+    expect(new Date(lead.nextAttemptAt).getTime()).toBeGreaterThan(Date.now() + 55 * 60_000);
   });
 
   it('rejects unauthenticated sockets and joining a campaign the agent is not on', async () => {

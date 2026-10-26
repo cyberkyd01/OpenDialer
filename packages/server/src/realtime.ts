@@ -37,6 +37,7 @@ export function createRealtime(ctx: Ctx, engine: Engine, servers: (HttpServer | 
     toSupervisors: (event, ...args) => {
       (nsp.to('wallboard').emit as (...a: unknown[]) => void)(event, ...args);
     },
+    supervisorCount: () => nsp.adapter.rooms.get('wallboard')?.size ?? 0,
   });
 
   const handle =

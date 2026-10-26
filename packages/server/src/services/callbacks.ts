@@ -102,6 +102,9 @@ export function updateCallback(db: DB, id: number, patch: { scheduledAt?: string
   if (patch.status === 'cancelled') {
     // lead goes back to the normal queue
     db.prepare(`UPDATE leads SET status = 'in_progress', next_attempt_at = NULL WHERE id = ? AND status = 'callback'`).run(cb.leadId);
+  } else if (patch.status === 'done') {
+    // closed by hand (e.g. customer reached another way): the lead is finished
+    db.prepare(`UPDATE leads SET status = 'done', locked_by = NULL, locked_at = NULL WHERE id = ? AND status = 'callback'`).run(cb.leadId);
   } else if (patch.scheduledAt && cb.status === 'pending') {
     db.prepare(`UPDATE leads SET status = 'callback', next_attempt_at = ? WHERE id = ?`).run(cb.scheduledAt, cb.leadId);
   }

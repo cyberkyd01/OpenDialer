@@ -418,8 +418,12 @@ export function applyDispositionToLead(
   const attempts = lead.attempts + 1;
   let status: LeadStatus;
   let nextAttemptAt: string | null = null;
-  if (hasCallback || disposition.category === 'callback') {
-    status = hasCallback ? 'callback' : 'in_progress';
+  if (hasCallback) {
+    status = 'callback';
+  } else if (disposition.category === 'callback') {
+    // "callback" chosen without a time: treat as a normal retry after the campaign delay
+    status = attempts >= campaign.maxAttempts ? 'done' : 'in_progress';
+    if (status === 'in_progress') nextAttemptAt = new Date(Date.now() + campaign.retryMinutes * 60 * 1000).toISOString();
   } else if (disposition.category === 'dnc') {
     status = 'dnc';
   } else if (disposition.category === 'invalid') {
